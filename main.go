@@ -1,14 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"compress/zlib"
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go/aws"
 	"log"
 	"os"
 
-	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
@@ -87,9 +89,53 @@ type Listings struct {
 	Results []Listing
 }
 
+type SeenIDs []string
+
+func (s *SeenIDs) MarshalDynamoDBAttributeValue(av *dynamodb.AttributeValue) error {
+	var out bytes.Buffer
+
+	j, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+
+	z := zlib.NewWriter(&out)
+
+	if _, err = z.Write(j); err != nil {
+		return err
+	}
+	if err = z.Close(); err != nil {
+		return err
+	}
+
+	av.SetB(out.Bytes())
+
+	return nil
+}
+
+func (s *SeenIDs) UnmarshalDynamoDBAttributeValue(av *dynamodb.AttributeValue) error {
+	if av.B != nil {
+		z, err := zlib.NewReader(bytes.NewReader(av.B))
+		if err != nil {
+			return err
+		}
+
+		j := json.NewDecoder(z)
+		if err = j.Decode(s); err != nil {
+			return err
+		}
+	} else if av.L != nil {
+		for _, v := range av.L {
+			*s = append(*s, *v.S)
+		}
+	}
+
+	return nil
+}
+
 type ListingCache struct {
-	PartitionKey string   `dynamodbav:"partition_key"`
-	SeenIDs      []string `dynamodbav:"seen_ids"`
+	PartitionKey string  `dynamodbav:"partition_key"`
+	SeenIDs      SeenIDs `dynamodbav:"seen_ids"`
 }
 
 type DB struct {
